@@ -10,3 +10,4 @@ endif
 
 obj-$(CONFIG_MACB) += macb.o
 obj-$(CONFIG_MACB_PCI) += macb_pci.o
+obj-$(CONFIG_AUP_MDIO_USERLAND) += aup_mdio_userland.o

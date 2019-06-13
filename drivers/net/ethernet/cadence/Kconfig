@@ -18,6 +18,17 @@ config NET_VENDOR_CADENCE
 
 if NET_VENDOR_CADENCE
 
+config AUP_MDIO_USERLAND
+	tristate "Auperator MDIO userland"
+	---help---
+	  This is API set for MDIO on userland.
+
+config AUP_MDIO_KERNEL
+	tristate "Auperator MDIO on kernel"
+	select AUP_MDIO_USERLAND
+	---help---
+	  This is API set for MDIO on kernel
+
 config MACB
 	tristate "Cadence MACB/GEM support"
 	depends on HAS_DMA

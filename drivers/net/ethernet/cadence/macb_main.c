@@ -609,11 +609,18 @@ static int macb_mii_probe(struct net_device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_AUP_MDIO_USERLAND
+extern struct mii_bus *aup_mdio;
+extern unsigned int aup_phy_name;
+extern int ingood_init(void);
+#endif
+
 static int macb_mii_init(struct macb *bp)
 {
 	struct macb_platform_data *pdata;
 	struct device_node *np, *mdio_np;
 	int err = -ENXIO, i;
+	int reg, id1, id2, id3, id4, id5;
 
 	/* Enable management port */
 	macb_writel(bp, NCR, MACB_BIT(MPE));
@@ -623,7 +630,9 @@ static int macb_mii_init(struct macb *bp)
 		err = -ENOMEM;
 		goto err_out;
 	}
-
+#ifdef CONFIG_AUP_MDIO_USERLAND
+	aup_mdio = bp->mii_bus;
+#endif
 	bp->mii_bus->name = "MACB_mii_bus";
 	bp->mii_bus->read = &macb_mdio_read;
 	bp->mii_bus->write = &macb_mdio_write;
@@ -663,6 +672,8 @@ static int macb_mii_init(struct macb *bp)
 
 			if (err)
 				goto err_out_unregister_bus;
+		}else{
+			printk ("[%s] of_mdiobus_register err=%d", __FUNCTION__, err);
 		}
 	} else {
 		if (pdata)
@@ -678,6 +689,87 @@ static int macb_mii_init(struct macb *bp)
 	if (err)
 		goto err_out_unregister_bus;
 
+#ifdef CONFIG_AUP_MDIO_KERNEL
+	id1 = bp->mii_bus->read(bp->mii_bus, 0x0, 0x2);
+	id2 = bp->mii_bus->read(bp->mii_bus, 0x0, 0x3);
+	/** aupv205B0 have 2 mv88e1112 on gem2:3 sgmii-1000baseX phy_id=0:1, 0x01410c97 & 0xfffffff0 */
+	if (id1 == 0x141 && (id2 & 0xfff0) == 0x0c90) {
+		id1 = bp->mii_bus->read(bp->mii_bus, 0x1, 0x2);
+		id2 = bp->mii_bus->read(bp->mii_bus, 0x1, 0x3);
+		if (id1 == 0x141 && (id2 & 0xfff0) == 0x0c90) {
+			/* MV1112 PHY */
+			unsigned short page;
+
+			aup_phy_name = 0x1112;
+			page = bp->mii_bus->read(bp->mii_bus, 0x0, 0x16);
+			/* Change to page 3 */
+			bp->mii_bus->write(bp->mii_bus, 0x0, 0x16, 0x3);
+			reg = bp->mii_bus->read(bp->mii_bus, 0x0, 0x10);
+			reg &= 0xfff;
+			reg |= 0x1000;
+			bp->mii_bus->write(bp->mii_bus, 0x0, 0x10, reg);
+			/* Recove default page */
+			bp->mii_bus->write(bp->mii_bus, 0x0, 0x16, page);
+
+			page = bp->mii_bus->read(bp->mii_bus, 0x1, 0x16);
+                        /* Change to page 3 */
+                        bp->mii_bus->write(bp->mii_bus, 0x1, 0x16, 0x3);
+                        reg = bp->mii_bus->read(bp->mii_bus, 0x1, 0x10);
+                        reg &= 0xfff;
+                        reg |= 0x1000;
+                        bp->mii_bus->write(bp->mii_bus, 0x1, 0x10, reg);
+			/* Recove default page */
+			bp->mii_bus->write(bp->mii_bus, 0x1, 0x16, page);
+		}
+	}else if (id1 == 0x141 && (id2 & 0xfff0) == 0x0dd0){
+		/** aupv305 pcie card have 1 mv88e1512 on gem3 sgmii-rj45 phy_id=0 */
+		aup_phy_name = 0x1512;
+	} else {
+		id1 = bp->mii_bus->read(bp->mii_bus, 0x10, 0x3) & 0xfff0;
+		id2 = bp->mii_bus->read(bp->mii_bus, 0x12, 0x3) & 0xfff0;
+		id3 = bp->mii_bus->read(bp->mii_bus, 0x14, 0x3) & 0xfff0;
+		id4 = bp->mii_bus->read(bp->mii_bus, 0x16, 0x3) & 0xfff0;
+		id5 = bp->mii_bus->read(bp->mii_bus, 0x18, 0x3) & 0xfff0;
+		if (id1 == 0x1A70 && id2 == 0x1A70 && id3 == 0x1A70 && id4 == 0x1A70 && id5 == 0x1A70) {
+			aup_phy_name = 0x6185;
+			/*port 6/7/8/9 enable forwarding*/
+			bp->mii_bus->write(bp->mii_bus, 0x17, 0x4, 0x77);
+			bp->mii_bus->write(bp->mii_bus, 0x18, 0x4, 0x77);
+			bp->mii_bus->write(bp->mii_bus, 0x19, 0x4, 0x77);
+			bp->mii_bus->write(bp->mii_bus, 0x16, 0x4, 0x77);
+			/*1000basex uplink port 7/8 link auto nego*/
+			reg = bp->mii_bus->read(bp->mii_bus, 0x18, 0x1);
+			printk ("[%s] port8 original PCS ctrl: 0x%x", __FUNCTION__, reg);
+			reg = (reg | 0x600) & 0xffff;	//PCS Inband Auto-Negotiation Enable, and Restart PCS Inband Auto-Negotiation
+			bp->mii_bus->write(bp->mii_bus, 0x18, 0x1, reg);
+			printk ("[%s] port8 set PCS ctrl= 0x%x", __FUNCTION__, reg);
+			reg = bp->mii_bus->read(bp->mii_bus, 0x17, 0x1);
+			printk ("[%s] port7 original PCS ctrl: 0x%x", __FUNCTION__, reg);
+			reg = (reg | 0x600) & 0xffff;	//PCS Inband Auto-Negotiation Enable, and Restart PCS Inband Auto-Negotiation
+			bp->mii_bus->write(bp->mii_bus, 0x17, 0x1, reg);
+			printk ("[%s] port7 set PCS ctrl= 0x%x", __FUNCTION__, reg);
+			/*cpu port 6/9 set to auto nego then fixed link*/
+			bp->mii_bus->write(bp->mii_bus, 0x16, 0x1, 0x83E);
+			bp->mii_bus->write(bp->mii_bus, 0x19, 0x1, 0x83E);
+			mdelay(500);
+			bp->mii_bus->write(bp->mii_bus, 0x16, 0x1, 0x603);
+			bp->mii_bus->write(bp->mii_bus, 0x19, 0x1, 0x603);
+			mdelay(500);
+			bp->mii_bus->write(bp->mii_bus, 0x16, 0x1, 0x83E);
+			bp->mii_bus->write(bp->mii_bus, 0x19, 0x1, 0x83E);
+			mdelay(500);
+			bp->mii_bus->write(bp->mii_bus, 0x16, 0x1, 0x3E);
+			bp->mii_bus->write(bp->mii_bus, 0x19, 0x1, 0x3E);
+			mdelay(500);
+			/*soft reset*/
+			bp->mii_bus->write(bp->mii_bus, 0x1B, 0x4, 0xC000);
+			mdelay(500);
+			ingood_init();
+		}else{
+			printk ("[%s] no found known phy, id1=0x%x, id2=0x%x", __FUNCTION__, id1, id2);
+		}
+	}
+#endif
 	return 0;
 
 err_out_unregister_bus:
@@ -688,6 +780,9 @@ err_out_free_fixed_link:
 err_out_free_mdiobus:
 	of_node_put(bp->phy_node);
 	mdiobus_free(bp->mii_bus);
+#ifdef CONFIG_AUP_MDIO_USERLAND
+	aup_mdio = NULL;
+#endif
 err_out:
 	return err;
 }
@@ -2242,7 +2337,7 @@ static u32 gem_mdc_clk_div(struct macb *bp)
 {
 	u32 config;
 	unsigned long pclk_hz = clk_get_rate(bp->pclk);
-
+	printk("DEBUG:gem_mdc_clk_div pclk_hz=%u\n", pclk_hz);
 	if (pclk_hz <= 20000000)
 		config = GEM_BF(CLK, GEM_CLK_DIV8);
 	else if (pclk_hz <= 40000000)
@@ -2256,6 +2351,9 @@ static u32 gem_mdc_clk_div(struct macb *bp)
 	else
 		config = GEM_BF(CLK, GEM_CLK_DIV96);
 
+	/** workaround for 7EV 2018.3, I have test pclk is 100M, 
+		but clk_get_rate return 0, so use fixed div 48, got 2M clk */
+	config = GEM_BF(CLK, GEM_CLK_DIV48);
 	return config;
 }
 

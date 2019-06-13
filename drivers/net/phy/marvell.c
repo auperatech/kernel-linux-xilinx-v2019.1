@@ -1063,6 +1063,126 @@ static int m88e1145_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+
+static int m88e1112_1000baseX_soft_reset(struct phy_device *phydev)
+{
+	int ret;
+	unsigned int retries = 12;
+
+	ret = marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);
+	if (ret < 0)
+		return ret;
+
+	ret = phy_write(phydev, MII_BMCR, (BMCR_RESET | BMCR_FULLDPLX | BMCR_ANENABLE));
+	if (ret < 0)
+		return ret;
+
+	//return phy_poll_reset(phydev);
+	/* Poll until the reset bit clears (50ms per retry == 0.6 sec) */
+
+	do {
+		msleep(50);
+		ret = phy_read(phydev, MII_BMCR);
+		if (ret < 0)
+			return ret;
+	} while (ret & BMCR_RESET && --retries);
+	if (ret & BMCR_RESET)
+		return -ETIMEDOUT;
+
+	/* Some chips (smsc911x) may still need up to another 1ms after the
+	 * BMCR_RESET bit is cleared before they are usable.
+	 */
+	msleep(1);
+	return 0;
+}
+
+static int m88e1112_1000baseX_suspend(struct phy_device *phydev)
+{
+	int err;
+
+	err = marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);
+	if (err < 0)
+		goto error;
+
+	/* With the page set, use the generic resume */
+	err = genphy_suspend(phydev);
+	if (err < 0)
+		goto error;
+error:
+	marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);
+	return err;
+}
+
+/** resume: we only use fibber */
+static int m88e1112_1000baseX_resume(struct phy_device *phydev)
+{
+	int err;
+
+	err = marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);
+	if (err < 0)
+		goto error;
+
+	/* With the page set, use the generic resume */
+	err = genphy_resume(phydev);
+	if (err < 0)
+		goto error;
+error:
+	marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);
+	return err;
+}
+
+static int m88e1112_1000baseX_config_aneg(struct phy_device *phydev)
+{
+	marvell_config_aneg_fiber(phydev);
+
+	return 0;
+}
+
+static int m88e1112_1000baseX_config_init(struct phy_device *phydev)
+{
+	int reg, err, oldpage;
+
+	if (phydev->interface == PHY_INTERFACE_MODE_SGMII) {
+		/*
+		for aupera v205, we have only sgmii to 1000basex, no-copper
+		88e1112 page2, reg16=mac specific control, bit 9:7=mode_select 111=sgmii to 1000baseX only
+		*/
+
+		/* soft reset */
+		err = m88e1112_1000baseX_soft_reset(phydev);
+		if (err < 0) return err;
+
+		oldpage = marvell_get_set_page(phydev, 2);
+		if (oldpage < 0) return oldpage;
+
+		reg = phy_read(phydev, 16);
+		if (reg < 0) return reg;
+
+		reg |= 0x0380;
+
+		err = phy_write(phydev, 16, reg);
+		if (err < 0) return err;
+
+		//marvell_set_page(phydev, oldpage);
+		marvell_set_page(phydev, MII_MARVELL_FIBER_PAGE);	/*fixed at fibber page*/
+
+		/*1000baseX auto nego*/
+		phydev->autoneg = AUTONEG_ENABLE;
+		phydev->speed = SPEED_1000;
+		phydev->duplex = DUPLEX_FULL;
+		phydev->supported   = ADVERTISE_FIBER_1000HALF | ADVERTISE_FIBER_1000FULL;	// | ADVERTISE_1000XPAUSE | ADVERTISE_1000XPSE_ASYM;
+		phydev->advertising = ADVERTISE_FIBER_1000HALF | ADVERTISE_FIBER_1000FULL;	// | ADVERTISE_1000XPAUSE | ADVERTISE_1000XPSE_ASYM;
+
+		/* soft reset */
+		err = m88e1112_1000baseX_soft_reset(phydev);
+		if (err < 0) return err;
+
+		m88e1112_1000baseX_config_aneg(phydev);
+	}
+
+	return 0;
+}
+
 /**
  * fiber_lpa_to_ethtool_lpa_t
  * @lpa: value of the MII_LPA register for fiber link
@@ -1480,6 +1600,28 @@ static int m88e1318_set_wol(struct phy_device *phydev,
 
 error:
 	return phy_restore_page(phydev, oldpage, err);
+}
+
+/** Parse the 88E1112's status register for fabric 1000baseX speed and duplex information */
+static int m88e1112_1000baseX_read_status(struct phy_device *phydev)
+{
+	int reg;
+	reg = phy_read(phydev, MII_M1011_PHY_STATUS);
+
+	if (reg & MII_M1011_PHY_STATUS_LINK){
+		phydev->link = 1;
+		phydev->speed = SPEED_1000;
+		if (reg & MII_M1011_PHY_STATUS_FULLDUPLEX)
+			phydev->duplex = DUPLEX_FULL;
+		else
+			phydev->duplex = DUPLEX_HALF;
+	}else{
+		phydev->link = 0;
+	}
+
+	marvell_update_link(phydev, 1);	/*update fiber=1*/
+
+	return 0;
 }
 
 static int marvell_get_sset_count(struct phy_device *phydev)
@@ -2040,7 +2182,7 @@ static struct phy_driver marvell_drivers[] = {
 		.get_strings = marvell_get_strings,
 		.get_stats = marvell_get_stats,
 	},
-	{
+	/*{	//disable normally 1112, use our 1000basex only 1112 driver
 		.phy_id = MARVELL_PHY_ID_88E1112,
 		.phy_id_mask = MARVELL_PHY_ID_MASK,
 		.name = "Marvell 88E1112",
@@ -2055,6 +2197,24 @@ static struct phy_driver marvell_drivers[] = {
 		.suspend = &genphy_suspend,
 		.read_page = marvell_read_page,
 		.write_page = marvell_write_page,
+		.get_sset_count = marvell_get_sset_count,
+		.get_strings = marvell_get_strings,
+		.get_stats = marvell_get_stats,
+	},*/
+	{
+		.phy_id = MARVELL_PHY_ID_88E1112,
+		.phy_id_mask = MARVELL_PHY_ID_MASK,
+		.name = "Marvell 88E1112",
+		.features = PHY_GBIT_FEATURES,
+		.flags = PHY_HAS_INTERRUPT,
+		.probe = marvell_probe,
+		.config_init = &m88e1112_1000baseX_config_init,
+		.config_aneg = &m88e1112_1000baseX_config_aneg,
+		.read_status = &m88e1112_1000baseX_read_status,
+		.ack_interrupt = &marvell_ack_interrupt,
+		.config_intr = &marvell_config_intr,
+		.resume = &m88e1112_1000baseX_resume,
+		.suspend = &m88e1112_1000baseX_suspend,
 		.get_sset_count = marvell_get_sset_count,
 		.get_strings = marvell_get_strings,
 		.get_stats = marvell_get_stats,
