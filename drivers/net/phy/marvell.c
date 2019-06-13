@@ -1152,8 +1152,9 @@ static int m88e1112_1000baseX_config_init(struct phy_device *phydev)
 		err = m88e1112_1000baseX_soft_reset(phydev);
 		if (err < 0) return err;
 
-		oldpage = marvell_get_set_page(phydev, 2);
+		oldpage = phy_save_page(phydev);
 		if (oldpage < 0) return oldpage;
+		marvell_set_page(phydev, 2);
 
 		reg = phy_read(phydev, 16);
 		if (reg < 0) return reg;
