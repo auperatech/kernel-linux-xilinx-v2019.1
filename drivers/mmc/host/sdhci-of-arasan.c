@@ -1427,6 +1427,10 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 		host->mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
 	}
 
+	if(sdhci_arasan->device_id == 0) {/*v205 emmc is 8bit*/
+            host->mmc->caps |= MMC_CAP_8_BIT_DATA;
+        }
+
 	ret = sdhci_arasan_add_host(sdhci_arasan);
 	if (ret)
 		goto err_add_host;
