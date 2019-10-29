@@ -53,6 +53,7 @@ static spinlock_t dmalock;
 static struct cdev *dma_cdev = NULL;
 static struct class *dma_class = NULL;  
 static DECLARE_WAIT_QUEUE_HEAD(piccpy_queue);
+static volatile int gDmaChanRqtFlag = 0;
 
 static dmaCh_t *get_idle_dma_channel(void)
 {
@@ -88,6 +89,32 @@ static void dma_complete_func(void *completion)
 	{
 		complete(completion);
 	}
+}
+
+static int device_open(struct inode *inode, struct file *file)
+{
+	dma_cap_mask_t mask;
+	int i;
+
+	spin_lock(&dmalock);
+	if(!gDmaChanRqtFlag){
+		dma_cap_zero(mask);
+        	dma_cap_set(DMA_MEMCPY,mask);
+		for(i=0;i<MAX_DMA_CHANNELS;i++)
+		{
+			g_dmaCh[i].use = 0;
+			g_dmaCh[i].pChan = dma_request_channel(mask, 0, NULL);
+			if(NULL==g_dmaCh[i].pChan)
+			{
+				printk(KERN_ERR "picCpy:dma_request_channel fail!\n");
+				spin_unlock(&dmalock);
+				return -1;
+			}
+		}
+		gDmaChanRqtFlag = 1;
+	}
+	spin_unlock(&dmalock);
+	return 0;
 }
 
 static long device_ioctl(struct file *file,unsigned int num,unsigned long param)
@@ -254,6 +281,7 @@ static struct file_operations picCpy_fops =
 {
     .owner = THIS_MODULE,
     .unlocked_ioctl = device_ioctl,
+    .open = device_open
 };
 
 static int __init picCpy_init (void)
@@ -265,6 +293,8 @@ static int __init picCpy_init (void)
 	int i;
 
 	spin_lock_init(&dmalock);
+
+	/*
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_MEMCPY,mask);
 	for(i=0;i<MAX_DMA_CHANNELS;i++)
@@ -277,6 +307,7 @@ static int __init picCpy_init (void)
 			return -1;
 		}
 	}
+	*/
 
 	if(register_chrdev_region(MKDEV(DMA_MAJOR, DMA_MINOR), 1, DMA_NAME))
 	{
